@@ -18,6 +18,7 @@ from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from datetime import datetime
+from html.parser import HTMLParser
 
 
 def is_github_notification(msg):
@@ -69,38 +70,132 @@ def is_from_2025(msg):
         return False
 
 
+def extract_body_text_without_tables(html_content):
+    """
+    Extract text from HTML body section, excluding any content within table tags.
+    """
+    class BodyTextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.in_body = False
+            self.in_table = 0
+            self.text_parts = []
+        
+        def handle_starttag(self, tag, attrs):
+            if tag == 'body':
+                self.in_body = True
+            elif tag == 'table':
+                self.in_table += 1
+        
+        def handle_endtag(self, tag):
+            if tag == 'body':
+                self.in_body = False
+            elif tag == 'table':
+                self.in_table = max(0, self.in_table - 1)
+        
+        def handle_data(self, data):
+            if self.in_body and self.in_table == 0:
+                self.text_parts.append(data)
+    
+    parser = BodyTextExtractor()
+    parser.feed(html_content)
+    
+    # Join text parts and clean up whitespace
+    text = ' '.join(parser.text_parts)
+    # Collapse multiple whitespaces/newlines
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
 def extract_text_body(msg):
-    """Extract the plain text body from an email message."""
+    """
+    Extract text body from an email message.
+    
+    For multipart/alternative messages, prefer HTML content over plain text.
+    For other multipart messages, extract plain text if available.
+    
+    Special handling for "Recap of your meeting with Interlisp" emails:
+    - Extract only body section content
+    - Remove all table elements
+    - Return only text content
+    """
     body = ""
+    html_body = ""
+    new_content_type = ""
+    
+    # Check if this is a "Recap of your meeting with Interlisp" email
+    subject = msg.get('Subject', '')
+    is_recap_email = "Recap of your meeting with Interlisp" in subject
     
     if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            content_disposition = str(part.get("Content-Disposition", ""))
+        content_type = msg.get_content_type()
+        
+        # For multipart/alternative, prefer HTML over plain text
+        if content_type == "multipart/alternative":
+            for part in msg.walk():
+                if part.get_content_type() == "text/html":
+                    try:
+                        payload = part.get_payload(decode=True)
+                        new_content_type = part.get_content_type()
+                        if payload:
+                            charset = part.get_content_charset() or 'utf-8'
+                            html_body = payload.decode(charset, errors='replace')
+                            break
+                    except Exception:
+                        pass
             
-            # Skip attachments
-            if "attachment" in content_disposition:
-                continue
-            
-            if content_type == "text/plain":
-                try:
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        charset = part.get_content_charset() or 'utf-8'
-                        body = payload.decode(charset, errors='replace')
-                        break
-                except Exception:
-                    pass
+            # If no HTML found, fall back to plain text
+            if not html_body:
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        try:
+                            payload = part.get_payload(decode=True)
+                            new_content_type = part.get_content_type()
+                            if payload:
+                                charset = part.get_content_charset() or 'utf-8'
+                                body = payload.decode(charset, errors='replace')
+                                break
+                        except Exception:
+                            pass
+            else:
+                body = html_body
+                # Apply special processing for recap emails
+                if is_recap_email:
+                    body = extract_body_text_without_tables(html_body)
+        else:
+            # For other multipart messages, look for text/plain
+            for part in msg.walk():
+                content_disposition = str(part.get("Content-Disposition", ""))
+                
+                # Skip attachments
+                if "attachment" in content_disposition:
+                    continue
+                
+                if part.get_content_type() == "text/plain":
+                    try:
+                        payload = part.get_payload(decode=True)
+                        new_content_type = part.get_content_type()
+                        if payload:
+                            charset = part.get_content_charset() or 'utf-8'
+                            body = payload.decode(charset, errors='replace')
+                            break
+                    except Exception:
+                        pass
     else:
         try:
             payload = msg.get_payload(decode=True)
             if payload:
                 charset = msg.get_content_charset() or 'utf-8'
                 body = payload.decode(charset, errors='replace')
+                new_content_type = msg.get_content_type()
+                
+                # Apply special processing for recap emails with HTML content
+                if is_recap_email and msg.get_content_type() == "text/html":
+                    body = extract_body_text_without_tables(body)
         except Exception:
             pass
     
-    return body.strip()
+    return body.strip(), new_content_type
 
 
 def extract_author(msg):
@@ -116,6 +211,25 @@ def extract_author(msg):
     
     # Just email address
     return from_addr, from_addr
+
+
+def extract_email_addresses(field_value):
+    """Extract email addresses from a field value (can be comma-separated)."""
+    if not field_value:
+        return []
+    
+    addresses = []
+    # Split by comma and extract email addresses
+    for item in field_value.split(','):
+        item = item.strip()
+        # Parse "Name <email>" format
+        match = re.search(r'<([^>]+)>', item)
+        if match:
+            addresses.append(match.group(1).strip())
+        elif '@' in item:
+            addresses.append(item)
+    
+    return addresses
 
 
 def parse_email_file(filepath):
@@ -134,8 +248,17 @@ def create_rag_document(msg, filepath):
     author_name, author_email = extract_author(msg)
     date_str = msg.get('Date', '')
     subject = msg.get('Subject', '')
-    body = extract_text_body(msg)
+    body, new_content_type = extract_text_body(msg)
     message_id = msg.get('Message-ID', filepath.stem)
+    if new_content_type != "":
+        content_type = new_content_type
+    else:
+        content_type = msg.get('Content-Type', '')
+    
+    # Extract TO, CC, and In-Reply-To fields
+    to_addresses = extract_email_addresses(msg.get('To', ''))
+    cc_addresses = extract_email_addresses(msg.get('Cc', ''))
+    in_reply_to = msg.get('In-Reply-To', '')
     
     # Try to parse date
     try:
@@ -144,17 +267,6 @@ def create_rag_document(msg, filepath):
     except (ValueError, TypeError):
         iso_date = date_str
     
-    # Create combined text for RAG
-    text = f"""
-EMAIL MESSAGE
-SUBJECT: {subject}
-FROM: {author_name} <{author_email}>
-DATE: {iso_date}
-
-BODY:
-{body}
-    """.strip()
-    
     # Create unique ID from message-id or filename
     clean_id = re.sub(r'[<>@\s]', '_', message_id)
     doc_id = f"email_{clean_id}"
@@ -162,12 +274,16 @@ BODY:
     return {
         "id": doc_id,
         "type": "message",
-        "text": text,
+        "body": body,
         "metadata": {
             "author": author_name,
             "email": author_email,
             "subject": subject,
             "date": iso_date,
+            "to": to_addresses,
+            "cc": cc_addresses,
+            "in_reply_to": in_reply_to,
+            "content_type": content_type,
             "source_file": filepath.name
         }
     }

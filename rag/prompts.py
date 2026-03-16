@@ -87,8 +87,9 @@ def return_instructions_root(template_text: Optional[str] = None) -> str:
         Format the citations at the end of your answer under a heading like
         "Citations" or "References." For example:
         "Citations:
-        1) RAG Guide: Implementation Best Practices
-        2) Advanced Retrieval Techniques: Vector Search Methods"
+        1) Message sent by Nick Briggs on 2025-02-10 titled 'link for old Unicode versions'
+        2) Issue 2427: loadup -x script fails with clearing interlock by MattHeffron
+        3) PR 2435: Fix typeo in MAIKOCOLOR by rmkaplan"
 
         Do not reveal your internal chain-of-thought or how you used the chunks.
         Simply provide concise and factual answers, and then list the
@@ -151,4 +152,4 @@ def return_instructions_root(template_text: Optional[str] = None) -> str:
         """
         return instruction_prompt_v2 + template_section
 
-    return instruction_prompt_v2
+    return instruction_prompt_v1

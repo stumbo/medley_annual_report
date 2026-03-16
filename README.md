@@ -24,7 +24,7 @@ All processors must output documents following this structure (see [verify_rag_d
 ```python
 {
     "id": "unique_identifier",
-    "type": "issue" | "pr" | "message",
+    "type": "issue" | "pr" | "email",
     "text": "combined searchable text content",
     "metadata": {
         "author": "login",
@@ -68,6 +68,42 @@ python processEmails.py  # outputs rag_emails.json
 ```bash
 python verify_rag_docs.py rag_issues.json rag_prs.json rag_emails.json
 # Reports: doc counts, types, repos, top authors, missing fields
+```
+
+### Local Hybrid Search (keyword + vector)
+
+This repo now includes a small local hybrid retrieval path in addition to the Vertex AI RAG tool.
+
+- Build a local SQLite FTS index from your RAG JSON files:
+```bash
+python -m rag.build_index --inputs rag/*.json --out rag/rag_index.db
+```
+- Run the agent with the optional local retrieval tool (set in env or `.env`):
+```bash
+export USE_KEYWORD_RETRIEVAL=1
+export RAG_INDEX_PATH=rag/rag_index.db
+export HYBRID_WEIGHTS="0.6,0.4"  # vector,keyword weights
+uv run adk run rag   # or: python -m rag.agent
+```
+- Tools added:
+  - `rag/search.py` — keyword (SQLite FTS5), vector wrapper, hybrid merge logic
+  - `rag/build_index.py` — build local `rag_index.db`
+  - `rag/tune_weights.py` — simple weight-sweep script for tuning
+
+Notes:
+- `HYBRID_WEIGHTS` may be either a single vector weight (keyword = 1 - vector) or two comma-separated numbers `vector,keyword`.
+- The local tool is intended for development and small-scale retrieval; for production use Vertex AI RAG (set `RAG_CORPUS`).
+
+Quick .env setup
+----------------
+Copy the example `.env.example` into `.env`, edit values as needed, then build the index and run the agent:
+
+```bash
+cp .env.example .env
+# (edit .env to set RAG_INDEX_PATH, HYBRID_WEIGHTS, RAG_CORPUS as desired)
+python -m rag.build_index --inputs rag/*.json --out rag/rag_index.db
+# Start the agent (ADK runner loads .env automatically):
+uv run adk run rag
 ```
 
 ### Google Groups Scraping

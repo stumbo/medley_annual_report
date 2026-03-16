@@ -31,20 +31,15 @@ for repo_key, _ in REPOS:
     prs = load_repo_prs(repo_key)
     for pr in prs:
         pr_id = pr.get("number")
+        title = pr.get("title", "")
+        author_login = pr.get("author", {}).get("login", "")
         details = load_details(repo_key, pr_id)
 
         comments_text = " ".join((c.get("body") or "") for c in details.get("comments", []))
         reviews_text = " ".join((r.get("body") or "") for r in details.get("reviews", []))
-        files_text = ", ".join((f.get("path") or "") for f in details.get("files", []))
+        file_paths = [f.get("path") for f in details.get("files", []) if f.get("path")]
 
         full_text = f"""
-REPO: {repo_key}
-TITLE: {pr.get('title','')}
-AUTHOR: {pr.get('author',{}).get('login','')}
-CREATED: {pr.get('createdAt','')}
-MERGED: {pr.get('mergedAt','')}
-
-BODY:
 {pr.get('body','')}
 
 COMMENTS:
@@ -52,9 +47,6 @@ COMMENTS:
 
 REVIEWS:
 {reviews_text}
-
-FILES:
-{files_text}
         """
 
         docs.append({
@@ -63,9 +55,12 @@ FILES:
             "text": full_text,
             "metadata": {
                 "repo": repo_key,
-                "author": pr.get('author', {}).get('login', ''),
+                "author": author_login,
                 "date": pr.get('createdAt', ''),
-                "labels": [l.get('name') for l in pr.get('labels', [])]
+                "merged": pr.get('mergedAt', ''),
+                "labels": [l.get('name') for l in pr.get('labels', [])],
+                "subject": title,
+                "files": file_paths,
             }
         })
 

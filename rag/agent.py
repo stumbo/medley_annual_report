@@ -18,6 +18,7 @@ from typing import Optional
 from google.adk.agents import Agent
 from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
 from vertexai.preview import rag
+from .search import LocalKeywordRetrieval
 
 from dotenv import load_dotenv
 from .prompts import return_instructions_root
@@ -64,6 +65,10 @@ load_dotenv()
 tools = []
 rag_corpus = os.environ.get("RAG_CORPUS")
 
+# Optional local keyword/hybrid retrieval using a built sqlite FTS index.
+use_keyword = os.environ.get("USE_KEYWORD_RETRIEVAL")
+rag_index_path = os.environ.get("RAG_INDEX_PATH", "rag/rag_index.db")
+
 if rag_corpus:
     ask_vertex_retrieval = VertexAiRagRetrieval(
         name='retrieve_rag_documentation',
@@ -83,7 +88,36 @@ if rag_corpus:
     )
     tools.append(ask_vertex_retrieval)
 
+
 template_text = _load_template_from_env()
+
+# Register local keyword/hybrid retrieval if requested (independent of RAG_CORPUS)
+if use_keyword:
+    # Parse HYBRID_WEIGHTS for agent creation; fallback handled inside search module
+    raw_weights = os.environ.get("HYBRID_WEIGHTS")
+    weights = None
+    if raw_weights:
+        try:
+            parts = [float(p.strip()) for p in raw_weights.split(',') if p.strip()]
+            if len(parts) == 1:
+                v = parts[0]
+                weights = (v, max(0.0, 1.0 - v))
+            elif len(parts) >= 2:
+                v, k = parts[0], parts[1]
+                s = v + k or 1.0
+                weights = (v / s, k / s)
+        except Exception:
+            weights = None
+
+    local_kw = LocalKeywordRetrieval(
+        name='local_keyword_retrieval',
+        description='Local hybrid keyword+vector retrieval (hybrid) using local index',
+        db_path=rag_index_path,
+    )
+    # Attach optional weights attribute for runtime use
+    if weights:
+        setattr(local_kw, 'weights', weights)
+    tools.append(local_kw)
 
 root_agent = Agent(
     model='gemini-2.5-flash',
